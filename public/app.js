@@ -1999,11 +1999,7 @@ function wireRoom(room) {
   room.on(E.LocalTrackUnpublished, () => { renderTiles(); syncVoiceState(); });
   room.on(E.ParticipantConnected, renderTiles);
   room.on(E.ParticipantDisconnected, renderTiles);
-  room.on(E.ActiveSpeakersChanged, (speakers) => {
-    V.speaking = new Set(speakers.map((s) => s.identity));
-    $$('.tile').forEach((t) => t.classList.toggle('speaking', V.speaking.has(t.dataset.pid)));
-    renderChannels();
-  });
+  room.on(E.ActiveSpeakersChanged, onSpeakersChanged);
   room.on(E.ConnectionQualityChanged, (q, p) => { if (p === room.localParticipant) setSignal(q); });
   room.on(E.Reconnecting, () => { setVoiceStatus('Reconectando…', true); setSignal('poor'); });
   room.on(E.Reconnected, () => setVoiceStatus('Voz conectada'));
@@ -2014,6 +2010,18 @@ function wireRoom(room) {
     }
   });
   room.on(E.MediaDevicesError, (e) => micError(e));
+}
+
+// quem está falando mudou: só liga e desliga o destaque nos avatares (antes refazia a barra lateral inteira)
+function onSpeakersChanged(speakers) {
+  V.speaking = new Set(speakers.map((s) => s.identity));
+  $$('.tile').forEach((t) => t.classList.toggle('speaking', V.speaking.has(t.dataset.pid)));
+  $$('#channel-list .vp[data-uid]').forEach((el) => {
+    const uid = el.dataset.uid;
+    const on = (V.channelId === Number(el.dataset.from) && V.speaking.has(uid)) || (Number(uid) === S.me.id && V.meSpeaking);
+    el.querySelector('.avatar')?.classList.toggle('speaking', on);
+  });
+  renderDmCall();
 }
 
 function setVoiceStatus(text, bad = false) {
@@ -3901,5 +3909,5 @@ function tileColor(u) {
   return `color-mix(in srgb, ${u.color} 45%, #1a1d20)`;
 }
 
-window.__dia = { S, V, checkCalls, renderChannels, openMusic, renderMusic, cameraPreview, screenPicker, renderTiles, showVoiceView, voiceUserMenu }; // usado nos testes automáticos
+window.__dia = { S, V, checkCalls, renderChannels, onSpeakersChanged, openMusic, renderMusic, cameraPreview, screenPicker, renderTiles, showVoiceView, voiceUserMenu }; // usado nos testes automáticos
 boot();
