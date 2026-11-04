@@ -1,9 +1,10 @@
 # DiscordIA
 
-Chat de texto e voz no estilo Discord para um grupo pequeno de amigos (até ~10). Roda no **PC Windows do Jonathan** e é acessado pelo **Tailscale** em `https://fdm-n-041.tailb26d1d.ts.net` (IP do Tailscale do PC: `100.96.31.27`). O app se chama **DiscordIA**. Os servidores dentro dele têm nome próprio; o principal é **SÓ OS CRIA**.
+Chat de texto e voz no estilo Discord para um grupo pequeno de amigos (até ~10). Roda no **PC Windows do Jonathan** e é acessado pelo **Tailscale**, no endereço `https://…ts.net` que o `DiscordIA.bat` mostra ao abrir e grava no `ENDERECO.txt` (esse arquivo não vai para o GitHub). O app se chama **DiscordIA**. Os servidores dentro dele têm nome próprio; o principal é **SÓ OS CRIA**.
 
 - Este arquivo tem duas partes. A primeira é o **manual de uso**. A segunda, **"Contexto para continuar o desenvolvimento"**, resume tudo o que foi construído e decidido, para quem for continuar o projeto começar um chat novo a partir daqui.
 - A pasta de verdade do projeto é **`C:\DiscordIA`** no PC do Jonathan. É ela que roda e é dela que se deve partir.
+- O código também está no GitHub em **BonathanRJ/DiscordIA**, com um commit curto por mudança. A pasta `data` (banco, contas, arquivos enviados, chaves) **nunca** vai para lá.
 
 ---
 
@@ -66,6 +67,12 @@ Toda vez que abre, ele confere e resolve sozinho o que faltar:
 - **`@all`** (também `@todos` / `@everyone`): marca todo mundo. Não vale no `#tempo`.
 - **`/clean`** (só administrador): apaga todas as mensagens do canal, com confirmação.
 
+### Trocar o PC que hospeda
+
+1. Feche a janela preta no PC antigo e copie a pasta `data` inteira.
+2. No PC novo: Tailscale conectado na conta principal, baixe o código do GitHub, coloque a pasta `data` dentro e abra o `DiscordIA.bat`.
+3. Use só um host por vez (senão viram dois servidores separados). O endereço `…ts.net` muda: os amigos precisam usar o novo (no app desktop, trocar o endereço do servidor).
+
 ### Problemas comuns
 
 - **"Não é possível acessar esse site":** o Tailscale do amigo está ligado? Ele aceitou o compartilhamento? O DiscordIA está aberto? No Android, desligue o **DNS privado**.
@@ -76,7 +83,8 @@ Toda vez que abre, ele confere e resolve sozinho o que faltar:
 
 | Pasta | O que é |
 |---|---|
-| `data` | banco de dados (`resenha.db`), `config.json` e arquivos enviados (`uploads`). **Faça backup** com o DiscordIA fechado |
+| `data` | banco de dados (`resenha.db`), `config.json` e arquivos enviados (`uploads`). **Faça backup** com o DiscordIA fechado. Não vai para o GitHub |
+| `backup` | cópias da pasta `data` (a de 04/11/2026 foi feita antes da auditoria de desempenho). Não vai para o GitHub |
 | `server` | servidor Node.js |
 | `public` | o app (HTML/CSS/JS) que o navegador e o app desktop carregam |
 | `desktop` | app Electron para Windows (`dist` é gerado sozinho) |
@@ -97,7 +105,9 @@ Toda vez que abre, ele confere e resolve sozinho o que faltar:
 - **Fluxo de trabalho usado até aqui:**
   - edita-se uma cópia local;
   - testa-se com Chrome headless (Playwright) e várias contas;
-  - copiam-se os arquivos para `C:\DiscordIA\...` no PC e confere-se o sha256 do arquivo gravado.
+  - copiam-se os arquivos para `C:\DiscordIA\...` no PC e confere-se o sha256 do arquivo gravado;
+  - cada mudança vira um commit no GitHub com **uma linha curta** de resumo, sem texto extra.
+- **Mudanças de desempenho:** antes e depois, grava-se o que o app gera (respostas do servidor, HTML da tela, eventos SSE, banco) e compara-se; só entra o que der igual. Relatório completo: "DiscordIA — Auditoria de performance" (claude.ai) e a planilha `DiscordIA-Resultados.xlsx`.
 - **O que não dá para testar fora do PC:** o LiveKit não roda no ambiente de desenvolvimento usado até agora. Voz real, transmissão e música do YouTube só foram testadas por simulação (mocks); os testes reais são do Jonathan.
 
 ### Pilha técnica
@@ -108,19 +118,22 @@ Toda vez que abre, ele confere e resolve sozinho o que faltar:
   - API de leitura com `GET /api/state`, `/api/messages`, `/api/search`, `/api/invite-info` e `/api/voice-token`.
   - Quase tudo que muda dados é `POST /api/action { type, ... }`, num `switch` dentro de `action(user, b)`.
   - Uploads por `POST /api/upload`, servidos em `/uploads/...` só para quem está logado.
-  - Arquivos estáticos com ETag; `/vendor/*` com cache de 1 dia.
+  - Arquivos estáticos com ETag; `/vendor/*` com cache de 1 dia. Texto (html, css, js, json, svg) acima de 1 KB vai **comprimido com gzip**, guardado em memória por versão.
+  - Login e troca de senha usam `scrypt` **assíncrono** (não travam o servidor).
 - **Banco:**
-  - Tabelas: `users`, `sessions`, `servers`, `server_members`, `categories`, `channels` (também guarda as DMs: `dm_a` / `dm_b`), `messages` (colunas extras `reply_to`, `forward`, `call`, `sys`), `reactions`, `reads`, `friends`, `dm_closed`, `access` (quem vê canal/categoria privada) e `meta`.
+  - Tabelas: `users`, `sessions`, `servers`, `server_members`, `categories`, `channels` (também guarda as DMs: `dm_a` / `dm_b`), `messages` (colunas extras `reply_to`, `forward`, `call`, `sys`), `reactions`, `reads`, `friends`, `dm_closed`, `dm_cleared` ("excluir conversa": esconde as mensagens até `before_id` só para aquela pessoa), `access` (quem vê canal/categoria privada) e `meta`.
+  - SQLite em WAL com `synchronous = NORMAL` (numa queda de energia as últimas gravações podem se perder; o banco não corrompe). Índices `idx_messages_unread` e `idx_messages_last` para não lidas e conversas privadas. Cada mensagem é gravada numa transação só (`tx()`).
   - As migrações são feitas com `addColumn` no `db.js` e no início do `index.js` (criação do servidor nº 1 a partir do `config.json` antigo).
 - **Cliente (`public/app.js`, `public/app.css`, `public/index.html`):**
   - JavaScript puro, num único arquivo grande, com o helper `h(tag, attrs, ...filhos)`.
   - Estado global em `S` (dados) e `V` (voz); preferências locais em `prefs` (localStorage `discordia.prefs`).
-  - Ícones são `<symbol>` SVG no `index.html` (`icon('nome')`).
+  - Ícones são `<symbol>` SVG no `index.html` (`icon('nome')`). Fontes Figtree e JetBrains Mono servidas de `public/vendor/fonts` (licença OFL), sem Google Fonts.
+  - Para não redesenhar à toa: rolar para cima só acrescenta as antigas (`prependOlder`); quem fala só troca a classe `speaking` (`onSpeakersChanged`); evento de voz sem entrada/saída só troca as salas (`updateVoiceRooms`); troca de perfil só redesenha as mensagens daquela pessoa (`refreshUserMessages`); a barra de cada mensagem é montada no `mouseenter` (`messageTools`).
   - Janelas no estilo Discord usam `openModal` + classe `mx` (`modalHead`, `switchEl`, `memberPicker`, …).
   - `window.__dia` expõe `S`, `V` e algumas funções **só para os testes automáticos**.
 - **Voz:**
   - LiveKit (binário Go em `livekit/`, iniciado pelo servidor com yaml gerado: `node_ip` = IP do Tailscale, UDP 50000–50100, TCP 7881). A sinalização passa pelo proxy `/livekit`.
-  - Cliente `public/vendor/livekit-client.umd.js` (2.23), com `webAudioMix` para volume por pessoa acima de 100%.
+  - Cliente `public/vendor/livekit-client.umd.js` (2.23), com `webAudioMix` para volume por pessoa acima de 100%. É carregado **em segundo plano** pelo `app.js` depois que o app abre (`loadLK()`); `joinVoice` espera por ele. Se a cópia local falhar, usa a do jsDelivr.
   - Microfone com `MicProcessor` (`public/audio/engine.js`) + AudioWorklet (`mic-worklet.js`): RNNoise (`vendor/rnnoise`), noise gate com sensibilidade automática e ganho.
 - **App desktop (`desktop/`):**
   - Electron 45 com `uiohook-napi` (apertar para falar global), bandeja, atalhos globais e barra de título própria (`titleBarStyle: hidden`).
@@ -158,8 +171,14 @@ Toda vez que abre, ele confere e resolve sozinho o que faltar:
 - Ignora acentos; resultados num painel à direita com "Pular" para a mensagem.
 
 **Mensagens diretas, amigos e ligações privadas**
-- Conversas privadas, sistema de **amigos** (pedido, aceitar, remover) e página Amigos com abas.
-- **Ligação privada** como no celular: toca, Atender ou Recusar, painel da ligação em cima do chat e registro "fulano iniciou uma chamada que durou…" / "você perdeu uma chamada…".
+- Conversas privadas: abrir com qualquer pessoa (botão direito → **Mensagem**, cartão de perfil ou **+** em "Mensagens diretas").
+- **Excluir conversa** no botão direito da conversa: as mensagens somem **só para quem excluiu** e a conversa sai da lista; volta se chegar mensagem nova (a outra pessoa continua vendo tudo).
+- Sistema de **amigos**: pedido pelo nome de usuário ou pelo botão direito/perfil, aceitar, recusar, cancelar e remover; se os dois pedirem, viram amigos direto. Página Amigos com abas (Disponível = amigos online).
+- **Ligação privada** como no celular:
+  - cartão de ligação recebida com **Aceitar com câmera**, **Aceitar chamada**, **Recusar chamada** e **Ignorar** (fecha só para você; quem ligou continua chamando até 45 s);
+  - recusar para de tocar para os dois; **Ligar de novo** fecha o registro anterior e toca de novo;
+  - painel da ligação em cima do chat;
+  - registros no chat: "fulano iniciou uma chamada. — Juntar-se à chamada", "fulano iniciou uma chamada que durou…" e "Você perdeu uma chamada de fulano que durou poucos segundos." (também ao recusar).
 
 **Voz**
 - Supressão de ruído, detecção de voz ou apertar para falar, volume por pessoa e indicador de qualidade da conexão.
@@ -215,7 +234,7 @@ Toda vez que abre, ele confere e resolve sozinho o que faltar:
 
 O Jonathan pediu para **economizar tokens**. Siga isto em todo chat novo:
 
-- **Não leia arquivos grandes inteiros.** O `public/app.js` tem ~3.900 linhas, o `server/index.js` ~1.450 e o `public/app.css` ~1.085. Use busca (Grep) pelo nome da função ou do texto e leia só o trecho com `offset`/`limit`.
+- **Não leia arquivos grandes inteiros.** O `public/app.js` tem ~4.050 linhas, o `server/index.js` ~1.600 e o `public/app.css` ~1.100. Use busca (Grep) pelo nome da função ou do texto e leia só o trecho com `offset`/`limit`.
 - **Use o mapa abaixo** para ir direto à seção certa, em vez de explorar o projeto.
 - **Edite só o trecho que muda**, com a ferramenta de edição. Nunca reescreva o arquivo inteiro e nunca use heredoc sem aspas no shell, porque `$('#…')` é expandido e corrompe o arquivo.
 - **Teste só o que mudou.** Um teste headless focado no recurso novo; não refaça a bateria toda a cada entrega.
@@ -227,32 +246,32 @@ O Jonathan pediu para **economizar tokens**. Siga isto em todo chat novo:
 
 | Linha | Seção |
 |---|---|
-| 9 | Utilidades (`h`, `$`, `icon`, `toast`…) |
-| 58 | Preferências locais (`prefs`) |
-| 80 | Estado (`S`, `V`) |
-| 114 | Sons |
-| 138 | Entrada (login / cadastro) |
-| 175 | Inicialização e eventos SSE |
-| 310 | Barra lateral (servidores, canais, salas de voz) |
-| 534 | Mensagens (render, reações, emojis, encaminhar) |
-| 1188 | DMs, amigos, perfis, ligações privadas |
-| 1800 | Digitando… |
-| 1816 | Caixa de mensagem |
-| 1898 | Voz (`joinVoice`, `leaveVoice`, tiles) |
-| 2083 | Microfone (captura + processamento) |
-| 2179 | Volumes de quem você ouve |
-| 2343 | Apertar para falar |
-| 2370 | Ponte com o app desktop (tela, câmera) |
-| 2535 | Modais (configurações do usuário etc.) |
-| 2846 | Barra de título e voltar/avançar |
-| 2856 | Menu do servidor (convite, config., criar canal/categoria, excluir) |
-| 3195 | Notificações do servidor |
-| 3335 | Busca de mensagens |
-| 3581 | Música |
-| 3769 | Botão direito em quem está na voz, "Mover para" |
-| 3854 | Grade de pessoas na sala (`layoutTiles`, `tileColor`) |
+| 25 | Utilidades (`h`, `$`, `icon`, `toast`…) |
+| 74 | Preferências locais (`prefs`) |
+| 96 | Estado (`S`, `V`) |
+| 130 | Sons |
+| 154 | Entrada (login / cadastro) |
+| 191 | Inicialização e eventos SSE |
+| 335 | Barra lateral (servidores, canais, salas de voz) |
+| 587 | Mensagens (render, rolagem, reações, emojis, encaminhar) |
+| 1330 | DMs, amigos, perfis, ligações privadas |
+| 1950 | Digitando… |
+| 1966 | Caixa de mensagem |
+| 2048 | Voz (`joinVoice`, `leaveVoice`, tiles) |
+| 2241 | Microfone (captura + processamento) |
+| 2337 | Volumes de quem você ouve |
+| 2501 | Apertar para falar |
+| 2528 | Ponte com o app desktop (tela, câmera) |
+| 2693 | Modais (configurações do usuário etc.) |
+| 3004 | Barra de título e voltar/avançar |
+| 3014 | Menu do servidor (convite, config., criar canal/categoria, excluir) |
+| 3353 | Notificações do servidor |
+| 3493 | Busca de mensagens |
+| 3739 | Música |
+| 3930 | Botão direito em quem está na voz, "Mover para" |
+| 4015 | Grade de pessoas na sala (`layoutTiles`, `tileColor`) |
 
-**Mapa do `server/index.js`:** Configuração (19), Utilidades e visibilidade (67), Tempo real SSE (370), Ligações privadas (410), Música (467), Token LiveKit (647), Limite de login (662), Rotas da API e `action()` com o `switch` de tipos (672), Arquivos estáticos (1299), Servidor HTTP (1342), Proxy LiveKit (1357), Início do LiveKit (1382).
+**Mapa do `server/index.js`:** Configuração (20), Utilidades e visibilidade (68), Tempo real SSE (387), Ligações privadas (427), Música (487), Token LiveKit (670), Limite de login (685), Rotas da API e `action()` com o `switch` de tipos (695), Arquivos estáticos e gzip (1422), Servidor HTTP (1497), Proxy LiveKit (1512), Início do LiveKit (1537).
 
 ### Próximos pedidos do Jonathan (fazer nesta ordem)
 
@@ -266,6 +285,8 @@ O Jonathan pediu para **economizar tokens**. Siga isto em todo chat novo:
    - Talvez dê para aproveitar e aceitar playlists.
 
 ### Pendências e ideias em aberto
+
+- **Testar no PC com outra pessoa:** ligação privada de verdade (aceitar, aceitar com câmera, recusar, ignorar, ligar de novo), destaque de quem fala e o app desktop no Windows. Tudo isso só foi testado simulando os eventos.
 
 - **Atraso ao entrar na sala de voz:** o Jonathan começou a descrever ("eu clico para entrar na sala…") e não terminou. Já houve otimizações (ver Voz). Próximo passo: pedir o tempo que o ícone de sinal mostra.
   - Se "conectar" passar de ~2 s, investigar a conexão UDP do LiveKit pelo Tailscale, que pode estar caindo para TCP.
