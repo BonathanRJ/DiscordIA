@@ -121,7 +121,7 @@ function createWindow() {
     if (input.control && !input.shift && input.key.toLowerCase() === 'r') win.webContents.reload();
   });
 
-  win.on('focus', () => win.flashFrame(false));
+  win.on('focus', () => { win.flashFrame(false); updateTrayMenu(); }); // mantém "Iniciar com o Windows" em dia no menu da bandeja
   openServer();
 }
 
@@ -318,7 +318,10 @@ ipcMain.handle('desktop:setPtt', (_e, v) => {
   return applyPtt();
 });
 ipcMain.on('desktop:state', (_e, s) => {
-  voiceState = { muted: !!s?.muted, deafened: !!s?.deafened, inVoice: !!s?.inVoice };
+  const next = { muted: !!s?.muted, deafened: !!s?.deafened, inVoice: !!s?.inVoice };
+  // a página manda o mesmo estado várias vezes (a cada aperto do apertar-para-falar): só refaz o menu se mudou
+  if (next.muted === voiceState.muted && next.deafened === voiceState.deafened && next.inVoice === voiceState.inVoice) return;
+  voiceState = next;
   updateTrayMenu();
 });
 ipcMain.on('desktop:flash', () => {
