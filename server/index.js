@@ -1016,11 +1016,14 @@ async function action(user, b) {
       return;
     }
     case 'voice_state': {
+      // só avisa todo mundo quando algo mudou de verdade (o app manda o mesmo estado várias vezes)
+      const next = { muted: !!b.muted, deafened: !!b.deafened, video: !!b.video, screen: !!b.screen };
+      let changed = false;
       for (const members of voice.values()) {
         const s = members.get(user.id);
-        if (s) Object.assign(s, { muted: !!b.muted, deafened: !!b.deafened, video: !!b.video, screen: !!b.screen });
+        if (s && (s.muted !== next.muted || s.deafened !== next.deafened || s.video !== next.video || s.screen !== next.screen)) { Object.assign(s, next); changed = true; }
       }
-      broadcastVoice();
+      if (changed) broadcastVoice();
       return;
     }
     case 'profile': {
