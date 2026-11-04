@@ -186,5 +186,10 @@ export function openDb(dataDir) {
     if (!ch) ch = { id: Number(db.prepare("INSERT INTO channels (name, type, position, created_at, category_id, private) VALUES ('tempo', 'text', 0, ?, ?, 0)").run(now, cat.id).lastInsertRowid) };
     db.prepare("INSERT INTO meta (k, v) VALUES ('music_channel', ?)").run(String(ch.id));
   }
+  // ---- índices: contar "não lidas" e achar a última mensagem de cada conversa sem ler o canal inteiro
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(channel_id, id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_last ON messages(channel_id, created_at);
+  `);
   return db;
 }
