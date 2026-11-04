@@ -785,27 +785,74 @@ function rerenderMessages(toBottom = false) {
   const stick = toBottom || nearBottom();
   const fromBottom = box.scrollHeight - box.scrollTop;
   box.innerHTML = '';
-  if (!S.hasMore[S.current]) {
-    const ch = channelById(S.current);
-    if (ch?.dm) box.append(dmIntro(ch, !list.length));
-    else box.append(h('div', { class: 'empty' }, h('h3', {}, `Bem-vindo a #${ch?.name || ''}!`), h('div', {}, 'Esse é o começo do canal. Manda a primeira mensagem aí.')));
-  } else {
-    box.append(h('button', { class: 'btn load-more', onclick: loadOlder }, 'Carregar mensagens antigas'));
-  }
-  let prev = null, markerDone = false;
-  const marker = S.marker?.channelId === S.current ? S.marker.after : null;
-  for (const m of list) {
-    if (!prev || !sameDay(prev.createdAt, m.createdAt)) box.append(h('div', { class: 'day' }, fmtDay(m.createdAt)));
-    if (marker !== null && !markerDone && m.id > marker && m.userId !== S.me.id) {
-      markerDone = true;
-      box.append(h('div', { class: 'new-divider' }, h('span', {}, 'Novas mensagens')));
-      prev = null; // a próxima mensagem mostra autor de novo
-    }
-    box.append(messageEl(m, prev));
-    prev = m;
-  }
+  box.append(messagesHead(list));
+  drawMessages(box, list, { prev: null, markerDone: false, marker: S.marker?.channelId === S.current ? S.marker.after : null });
   const nd = toBottom && $('.new-divider', box);
   if (nd) { nd.scrollIntoView({ block: 'center' }); return; }
+  if (stick) scrollBottom();
+  else box.scrollTop = box.scrollHeight - fromBottom;
+}
+
+// topo da conversa: botão de carregar as antigas ou, no começo de tudo, a apresentação do canal/conversa
+function messagesHead(list) {
+  if (S.hasMore[S.current]) return h('button', { class: 'btn load-more', onclick: loadOlder }, 'Carregar mensagens antigas');
+  const ch = channelById(S.current);
+  if (ch?.dm) return dmIntro(ch, !list.length);
+  return h('div', { class: 'empty' }, h('h3', {}, `Bem-vindo a #${ch?.name || ''}!`), h('div', {}, 'Esse é o começo do canal. Manda a primeira mensagem aí.'));
+}
+
+// desenha mensagens em sequência: separador de dia, linha "Novas mensagens" e agrupamento por autor (st guarda onde parou)
+function drawMessages(box, msgs, st) {
+  for (const m of msgs) {
+    if (!st.prev || !sameDay(st.prev.createdAt, m.createdAt)) box.append(h('div', { class: 'day' }, fmtDay(m.createdAt)));
+    if (st.marker !== null && !st.markerDone && m.id > st.marker && m.userId !== S.me.id) {
+      st.markerDone = true;
+      box.append(h('div', { class: 'new-divider' }, h('span', {}, 'Novas mensagens')));
+      st.prev = null; // a próxima mensagem mostra autor de novo
+    }
+    box.append(messageEl(m, st.prev));
+    st.prev = m;
+  }
+}
+
+// rolar para cima: põe só as mensagens antigas no topo, sem redesenhar a conversa inteira.
+// O resultado é o mesmo HTML do rerenderMessages(); se a tela não estiver como o esperado, redesenha tudo como antes.
+function prependOlder(older) {
+  const box = $('#messages');
+  const list = S.msgs[S.current];
+  if (!list || S.view !== 'chat') return;
+  const m0 = list[older.length]; // a mensagem que estava no topo
+  const head = box.firstElementChild;
+  const m0El = m0 && $(`.msg[data-id="${m0.id}"]`, box);
+  if (!older.length || !m0El || !head?.classList.contains('load-more')) return rerenderMessages();
+  // entre o botão e essa mensagem só pode haver o separador de dia e, talvez, a linha "Novas mensagens"
+  const lead = [];
+  for (let el = head.nextElementSibling; el && el !== m0El && lead.length < 3; el = el.nextElementSibling) lead.push(el);
+  if (!lead[0]?.matches('.day') || lead.length > 2 || (lead[1] && !lead[1].matches('.new-divider'))) return rerenderMessages();
+  const stick = nearBottom();
+  const fromBottom = box.scrollHeight - box.scrollTop;
+  const oldDivider = $('.new-divider', box);
+  const frag = document.createDocumentFragment();
+  frag.append(messagesHead(list));
+  const st = { prev: null, markerDone: false, marker: S.marker?.channelId === S.current ? S.marker.after : null };
+  drawMessages(frag, older, st);
+  const moved = st.markerDone; // a linha "Novas mensagens" agora fica no meio das antigas
+  // linha que estava mais abaixo e precisa sair: a mensagem depois dela volta a se agrupar com a anterior
+  let after = null;
+  if (moved && oldDivider && oldDivider !== lead[1]) {
+    const next = oldDivider.nextElementSibling;
+    const i = list.findIndex((x) => x.id === Number(next?.dataset.id));
+    if (i < 1) return rerenderMessages();
+    after = [next, messageEl(list[i], list[i - 1])];
+  }
+  // a mensagem do topo, como o redesenho completo a mostraria
+  if (!sameDay(st.prev.createdAt, m0.createdAt)) frag.append(h('div', { class: 'day' }, fmtDay(m0.createdAt)));
+  head.remove();
+  lead[0].remove();
+  if (lead[1] && !moved) frag.append(lead[1]); // continua antes dela, que segue sem agrupar
+  else { lead[1]?.remove(); m0El.replaceWith(messageEl(m0, st.prev)); }
+  if (after) { oldDivider.remove(); after[0].replaceWith(after[1]); }
+  box.prepend(frag);
   if (stick) scrollBottom();
   else box.scrollTop = box.scrollHeight - fromBottom;
 }
@@ -819,7 +866,7 @@ async function loadOlder() {
     const older = await api(`/api/messages?channel=${id}&before=${list[0].id}`);
     S.msgs[id] = older.concat(list);
     S.hasMore[id] = older.length === 50;
-    if (S.current === id) rerenderMessages();
+    if (S.current === id) prependOlder(older);
   } catch (e) { toast(e.message, true); }
   S.loading = false;
 }
