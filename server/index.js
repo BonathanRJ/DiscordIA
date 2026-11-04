@@ -735,12 +735,13 @@ async function api(req, res, url) {
   }
 
   if (p === '/api/state' && m === 'GET') {
-    const visible = new Set(channelsFor(user).map((c) => c.id));
+    const channels = channelsFor(user); // calculada uma vez só (antes saía duas vezes)
+    const visible = new Set(channels.map((c) => c.id));
     const unread = Object.fromEntries(q.unread.all(user.id, user.id, user.id, user.id).filter((r) => r.channel_id && (visible.has(r.channel_id) || q.channel.get(r.channel_id)?.dm_a)).map((r) => [r.channel_id, r.n]));
     return send(res, 200, {
       me: publicUser(user),
       users: q.allUsers.all().map(publicUser),
-      channels: channelsFor(user),
+      channels,
       categories: categoriesFor(user),
       notif: user.notif ? JSON.parse(user.notif) : null,
       servers: serversFor(user),
