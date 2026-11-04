@@ -274,7 +274,12 @@ function connectEvents() {
     renderChannels(); renderFriends(); renderProfilePanel();
     if (S.view === 'chat' && isDm(S.current) && !S.hasMore[S.current]) rerenderMessages();
   });
-  es.addEventListener('users', (e) => { S.users = new Map(JSON.parse(e.data).map((u) => [u.id, u])); S.me = S.users.get(S.me.id) || S.me; renderAll(); rerenderMessages(); });
+  es.addEventListener('users', (e) => {
+    const prevUsers = S.users;
+    S.users = new Map(JSON.parse(e.data).map((u) => [u.id, u])); S.me = S.users.get(S.me.id) || S.me;
+    renderAll();
+    if (!refreshUserMessages(prevUsers)) rerenderMessages();
+  });
   es.addEventListener('channels', (e) => {
     const d = JSON.parse(e.data);
     S.channels = (Array.isArray(d) ? d : d.channels).filter((c) => !c.parent_id);
@@ -886,6 +891,38 @@ function prependOlder(older) {
   box.prepend(frag);
   if (stick) scrollBottom();
   else box.scrollTop = box.scrollHeight - fromBottom;
+}
+
+// alguém trocou nome, cor ou foto: redesenha só as mensagens que mostram essa pessoa (antes redesenhava a conversa inteira).
+// Devolve false quando mudou algo que afeta outras mensagens (pessoa nova, @usuário, conta excluída)
+// ou quando a tela não está como o esperado; aí quem chamou redesenha tudo como antes.
+function refreshUserMessages(prev) {
+  const box = $('#messages');
+  const list = S.msgs[S.current];
+  if (!list || S.view !== 'chat') return true; // como no rerenderMessages: fora do chat não há o que redesenhar
+  if (!prev || prev.size !== S.users.size) return false;
+  const changed = new Set();
+  for (const [id, u] of S.users) {
+    const p = prev.get(id);
+    if (!p || p.username !== u.username || p.deleted !== u.deleted) return false;
+    if (p.displayName !== u.displayName || p.color !== u.color || p.avatar !== u.avatar) changed.add(id);
+  }
+  const jobs = [];
+  list.forEach((m, i) => {
+    if (!changed.has(m.userId) && !changed.has(m.reply?.userId)) return;
+    const el = $(`.msg[data-id="${m.id}"]`, box);
+    jobs.push([el, m, i === 0 || el?.previousElementSibling?.matches('.new-divider') ? null : list[i - 1]]);
+  });
+  const ch = channelById(S.current);
+  const head = !S.hasMore[S.current] && ch?.dm && changed.has(ch.dm) ? box.firstElementChild : null;
+  if (jobs.some(([el]) => !el) || (head && !head.matches('.dm-intro'))) return false;
+  const stick = nearBottom();
+  const fromBottom = box.scrollHeight - box.scrollTop;
+  for (const [el, m, p] of jobs) el.replaceWith(messageEl(m, p));
+  head?.replaceWith(messagesHead(list));
+  if (stick) scrollBottom();
+  else box.scrollTop = box.scrollHeight - fromBottom;
+  return true;
 }
 
 async function loadOlder() {
