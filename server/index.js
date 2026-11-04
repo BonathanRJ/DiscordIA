@@ -6,6 +6,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
@@ -1315,6 +1316,35 @@ function serveFile(res, file, headers, req) {
   });
 }
 
+// Arquivos de texto (html, css, js, json, svg) vão comprimidos (gzip): ~4x menos para baixar pelo Tailscale.
+// Cada arquivo é comprimido uma vez por versão (tamanho + data) e fica guardado em memória.
+const COMPRESSIBLE = /^(text\/|application\/(json|manifest\+json)|image\/svg\+xml)/;
+const gzipCache = new Map(); // arquivo -> { key, gz: Promise<Buffer> }
+function gzipOf(file, key) {
+  let c = gzipCache.get(file);
+  if (!c || c.key !== key) {
+    c = { key, gz: fs.promises.readFile(file).then((buf) => new Promise((ok, no) => zlib.gzip(buf, { level: 6 }, (e, out) => (e ? no(e) : ok(out))))) };
+    c.gz.catch(() => { if (gzipCache.get(file) === c) gzipCache.delete(file); });
+    gzipCache.set(file, c);
+  }
+  return c.gz;
+}
+function serveText(res, file, headers, req) {
+  const vary = { ...headers, Vary: 'Accept-Encoding' };
+  if (!/\bgzip\b/i.test(req.headers['accept-encoding'] || '')) return serveFile(res, file, vary, req);
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) return send(res, 404, 'Não encontrado');
+    if (st.size < 1024) return serveFile(res, file, vary, req); // pequeno demais para valer a pena
+    const key = `${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}`;
+    const etag = `"${key}-gz"`;
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, ...vary }); return res.end(); }
+    gzipOf(file, key).then(
+      (gz) => { res.writeHead(200, { 'Content-Length': gz.length, ETag: etag, 'Content-Encoding': 'gzip', ...vary }); res.end(gz); },
+      () => serveFile(res, file, vary, req),
+    );
+  });
+}
+
 function serveStatic(req, res, url) {
   let p = decodeURIComponent(url.pathname);
   if (p.startsWith('/uploads/')) {
@@ -1336,7 +1366,10 @@ function serveStatic(req, res, url) {
   if (!file.startsWith(PUBLIC)) return send(res, 403, 'Proibido');
   // bibliotecas grandes (voz, supressão de ruído) nunca mudam: ficam guardadas no aparelho por 1 dia
   const cache = /^\/vendor\//.test(p) ? 'public, max-age=86400' : 'no-cache';
-  serveFile(res, file, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': cache }, req);
+  const type = MIME[path.extname(file)] || 'application/octet-stream';
+  const headers = { 'Content-Type': type, 'Cache-Control': cache };
+  if (COMPRESSIBLE.test(type)) return serveText(res, file, headers, req);
+  serveFile(res, file, headers, req);
 }
 
 // ---------- Servidor HTTP ----------
