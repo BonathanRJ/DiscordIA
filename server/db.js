@@ -189,6 +189,15 @@ export function openDb(dataDir) {
     if (!ch) ch = { id: Number(db.prepare("INSERT INTO channels (name, type, position, created_at, category_id, private) VALUES ('tempo', 'text', 0, ?, ?, 0)").run(now, cat.id).lastInsertRowid) };
     db.prepare("INSERT INTO meta (k, v) VALUES ('music_channel', ?)").run(String(ch.id));
   }
+  // ---- "excluir conversa" privada: some só para quem excluiu (esconde as mensagens até before_id)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dm_cleared (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      before_id INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, channel_id)
+    );
+  `);
   // ---- índices: contar "não lidas" e achar a última mensagem de cada conversa sem ler o canal inteiro
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(channel_id, id, user_id);

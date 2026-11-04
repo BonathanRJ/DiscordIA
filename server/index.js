@@ -206,6 +206,9 @@ const q = {
   friendPut: db.prepare('INSERT OR REPLACE INTO friends (a, b, requester, status, created_at) VALUES (?, ?, ?, ?, ?)'),
   friendDel: db.prepare('DELETE FROM friends WHERE a = ? AND b = ?'),
   friendsOf: db.prepare('SELECT * FROM friends WHERE a = ? OR b = ?'),
+  dmCut: db.prepare('SELECT before_id FROM dm_cleared WHERE user_id = ? AND channel_id = ?'),
+  dmClear: db.prepare('INSERT INTO dm_cleared (user_id, channel_id, before_id) VALUES (?, ?, ?) ON CONFLICT(user_id, channel_id) DO UPDATE SET before_id = MAX(before_id, excluded.before_id)'),
+  lastMsgId: db.prepare('SELECT MAX(id) AS id FROM messages WHERE channel_id = ?'),
   setCall: db.prepare('UPDATE messages SET call = ? WHERE id = ?'),
   categories: db.prepare('SELECT * FROM categories ORDER BY position, id'),
   category: db.prepare('SELECT * FROM categories WHERE id = ?'),
@@ -334,9 +337,10 @@ function seedServer(sid) {
 }
 const dmOther = (ch, uid) => (ch.dm_a === uid ? ch.dm_b : ch.dm_a);
 // lista de conversas privadas de alguém (some as vazias criadas por outra pessoa e as que a pessoa fechou)
+const dmOpened = new Set(); // "uid:canal" de conversas vazias que a pessoa abriu agora (aparecem na lista dela)
 function dmsFor(uid) {
   return q.dmsOf.all(uid, uid, uid)
-    .filter((c) => (!c.closed && (c.last_id || c.creator_id === uid)) || voice.get(c.id)?.size) // chamada rolando sempre aparece
+    .filter((c) => (!c.closed && (c.last_id || c.creator_id === uid || dmOpened.has(`${uid}:${c.id}`))) || voice.get(c.id)?.size) // chamada rolando sempre aparece
     .map((c) => ({ id: c.id, type: 'text', dm: dmOther(c, uid), lastId: c.last_id || 0, lastAt: c.last_at || c.created_at }));
 }
 function friendsFor(uid) {
@@ -423,7 +427,7 @@ function voiceSnapshot(uid) {
 // ---------- Ligações privadas (tocam como no celular; dá para recusar) ----------
 const calls = new Map(); // channelId -> { msgId, startedAt, joined:Set, declined:Set, ringing:Set, timer }
 const RING_MS = 45000;
-const callOut = (c) => ({ startedAt: c.startedAt, endedAt: c.endedAt || null, joined: [...c.joined], declined: [...c.declined] });
+const callOut = (c) => ({ startedAt: c.startedAt, endedAt: c.endedAt || null, joined: [...c.joined], declined: [...c.declined], ...(c.declinedAt ? { declinedAt: c.declinedAt } : {}) });
 function saveCall(ch, c) {
   q.setCall.run(JSON.stringify(callOut(c)), c.msgId);
   const row = q.message.get(c.msgId);
@@ -804,7 +808,10 @@ async function api(req, res, url) {
     const before = Number(url.searchParams.get('before')) || 0;
     const ch = q.channel.get(channelId);
     if (!ch || ch.type !== 'text' || !canSee(user, ch)) throw fail(404, 'Canal não encontrado.');
-    const rows = before ? q.before.all(channelId, before, 50) : q.latest.all(channelId, 50);
+    let rows = before ? q.before.all(channelId, before, 50) : q.latest.all(channelId, 50);
+    // conversa privada que você excluiu: as mensagens até ali somem só para você (são sempre as mais antigas)
+    const cut = ch.dm_a ? q.dmCut.get(user.id, ch.id)?.before_id || 0 : 0;
+    if (cut) rows = rows.filter((r) => r.id > cut);
     return send(res, 200, rows.reverse().map(rowToMessage));
   }
 
@@ -823,7 +830,8 @@ async function api(req, res, url) {
     // canais onde dá para buscar: no servidor = canais de texto; numa conversa privada = só ela
     let allowed;
     if (scope === 'server') { const sid = Number(sp.get('server')) || 0; allowed = channelsFor(user).filter((c) => c.type === 'text' && !c.parent_id && (!sid || c.server_id === sid)).map((c) => c.id); }
-    else { const ch = q.channel.get(Number(scope)); if (!ch || !canSee(user, ch)) throw fail(404, 'Conversa não encontrada.'); allowed = [ch.id]; }
+    let cut = 0;
+    if (scope !== 'server') { const ch = q.channel.get(Number(scope)); if (!ch || !canSee(user, ch)) throw fail(404, 'Conversa não encontrada.'); allowed = [ch.id]; cut = ch.dm_a ? q.dmCut.get(user.id, ch.id)?.before_id || 0 : 0; }
     if (inCh.length) allowed = allowed.filter((id) => inCh.includes(id));
     if (!allowed.length) return send(res, 200, { total: 0, results: [] });
     const conds = [`channel_id IN (${allowed.map(() => '?').join(',')})`, 'call IS NULL'];
@@ -831,6 +839,7 @@ async function api(req, res, url) {
     if (from.length) { conds.push(`user_id IN (${from.map(() => '?').join(',')})`); args.push(...from); }
     if (before) { conds.push('created_at < ?'); args.push(before); }
     if (after) { conds.push('created_at >= ?'); args.push(after); }
+    if (cut) { conds.push('id > ?'); args.push(cut); }
     // só as colunas que o filtro usa; a mensagem completa é lida depois, apenas para as 25 da página
     const rows = db.prepare(`SELECT id, content, attachment, forward FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ${sort === 'old' ? 'ASC' : 'DESC'}`).all(...args);
     const mentionNames = mentions.map((id) => q.userById.get(id)?.username).filter(Boolean).map((n) => new RegExp(`@${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
@@ -1057,6 +1066,78 @@ async function action(user, b) {
         if (s && (s.muted !== next.muted || s.deafened !== next.deafened || s.video !== next.video || s.screen !== next.screen)) { Object.assign(s, next); changed = true; }
       }
       if (changed) broadcastVoice();
+      return;
+    }
+    // ---- conversas privadas: abrir com alguém novo e "excluir conversa" (some só para quem excluiu)
+    case 'dm_open': {
+      const ch = getOrCreateDm(user, b.userId);
+      q.dmReopen.run(ch.id, user.id);
+      dmOpened.add(`${user.id}:${ch.id}`);
+      pushDms(user.id);
+      return { id: ch.id };
+    }
+    case 'dm_close': {
+      const ch = q.channel.get(Number(b.channelId));
+      if (!ch?.dm_a || (ch.dm_a !== user.id && ch.dm_b !== user.id)) throw fail(404, 'Conversa não encontrada.');
+      const last = q.lastMsgId.get(ch.id)?.id || 0;
+      tx(() => { q.dmClear.run(user.id, ch.id, last); q.dmClose.run(user.id, ch.id); q.setRead.run(user.id, ch.id, last); });
+      dmOpened.delete(`${user.id}:${ch.id}`);
+      pushDms(user.id);
+      return;
+    }
+    // ---- amizades: pedido (por nome de usuário ou id), aceitar, recusar/cancelar/remover
+    case 'friend_request': {
+      const other = b.userId ? q.userById.get(Number(b.userId)) : q.userByName.get(String(b.username || '').trim().replace(/^@/, '').slice(0, 32));
+      if (!other || other.deleted) throw fail(404, 'Não achei ninguém com esse nome de usuário.');
+      if (other.id === user.id) throw fail(400, 'Você não pode adicionar você mesmo.');
+      const [a, z] = pair(user.id, other.id);
+      const f = q.friendGet.get(a, z);
+      if (f?.status === 'accepted') throw fail(409, `Você e ${other.display_name} já são amigos.`);
+      if (f && f.requester === user.id) throw fail(409, `Você já enviou um pedido para ${other.display_name}.`);
+      // a outra pessoa já tinha pedido: vira amizade direto
+      q.friendPut.run(a, z, f ? f.requester : user.id, f ? 'accepted' : 'pending', Date.now());
+      pushFriends(user.id, other.id);
+      return { status: f ? 'friend' : 'pending', name: other.display_name };
+    }
+    case 'friend_accept': {
+      const other = q.userById.get(Number(b.userId));
+      const [a, z] = other ? pair(user.id, other.id) : [0, 0];
+      const f = other && q.friendGet.get(a, z);
+      if (!f || f.status !== 'pending' || f.requester === user.id) throw fail(404, 'Não há pedido de amizade dessa pessoa.');
+      q.friendPut.run(a, z, f.requester, 'accepted', Date.now());
+      pushFriends(user.id, other.id);
+      return { status: 'friend', name: other.display_name };
+    }
+    case 'friend_remove': {
+      const other = q.userById.get(Number(b.userId));
+      if (!other) throw fail(404, 'Pessoa não encontrada.');
+      q.friendDel.run(...pair(user.id, other.id));
+      pushFriends(user.id, other.id);
+      return;
+    }
+    // ---- ligação privada: recusar (para de tocar para quem ligou) e ligar de novo
+    case 'call_decline': {
+      const ch = q.channel.get(Number(b.channelId));
+      const c = ch?.dm_a && calls.get(ch.id);
+      if (!c || (ch.dm_a !== user.id && ch.dm_b !== user.id)) return;
+      c.declined.add(user.id);
+      (c.declinedAt ||= {})[user.id] = Date.now();
+      c.ringing.delete(user.id);
+      if (!c.ringing.size) clearTimeout(c.timer);
+      saveCall(ch, c);
+      pushCall(ch);
+      return;
+    }
+    case 'call_ring': {
+      const ch = q.channel.get(Number(b.channelId));
+      if (!ch?.dm_a || (ch.dm_a !== user.id && ch.dm_b !== user.id)) throw fail(404, 'Conversa não encontrada.');
+      const members = voice.get(ch.id);
+      if (!members?.has(user.id)) throw fail(400, 'Entre na chamada para ligar de novo.');
+      if (members.has(dmOther(ch, user.id))) return;
+      // encerra o registro da ligação anterior e começa um novo, tocando de novo para a outra pessoa
+      const old = calls.get(ch.id);
+      if (old) { calls.delete(ch.id); clearTimeout(old.timer); old.ringing.clear(); old.endedAt = Date.now(); saveCall(ch, old); }
+      syncCalls();
       return;
     }
     case 'profile': {
