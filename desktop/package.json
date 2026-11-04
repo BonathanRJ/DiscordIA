@@ -1,0 +1,19 @@
+{
+  "name": "discordia-desktop",
+  "productName": "DiscordIA",
+  "version": "1.0.0",
+  "description": "App para Windows do DiscordIA",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "pack": "node empacotar.mjs"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "@electron/packager": ">=18.3.0",
+    "electron": ">=33.0.0"
+  }
+}

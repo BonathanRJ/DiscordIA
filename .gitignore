@@ -1,0 +1,12 @@
+# Dados do servidor: banco (mensagens, senhas, sessões), uploads e as chaves do LiveKit (config.json, livekit.yaml).
+# Nunca vão para o Git.
+/data/
+
+# Gerados ou baixados sozinhos pelo DiscordIA.bat
+/ENDERECO.txt
+/desktop/default-server.txt
+/desktop/dist/
+/desktop/node_modules/
+/public/download/
+/livekit/
+node_modules/

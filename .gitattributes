@@ -1,0 +1,3 @@
+# Guarda cada arquivo exatamente como está no PC (sem converter fim de linha),
+# para o sha256 bater com C:\DiscordIA e os .bat/.ps1 continuarem com CRLF.
+* -text

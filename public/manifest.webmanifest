@@ -1,0 +1,9 @@
+{
+  "name": "DiscordIA",
+  "short_name": "DiscordIA",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121416",
+  "theme_color": "#121416",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

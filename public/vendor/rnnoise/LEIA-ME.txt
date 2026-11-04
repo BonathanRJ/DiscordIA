@@ -1,0 +1,3 @@
+rnnoise-sync.js: RNNoise (Xiph.Org, licença BSD-3-Clause) compilado para WebAssembly
+pelo projeto jitsi/rnnoise-wasm v0.2.1 (licença Apache-2.0, ver LICENSE-rnnoise-wasm.txt).
+https://github.com/jitsi/rnnoise-wasm  ·  https://github.com/xiph/rnnoise

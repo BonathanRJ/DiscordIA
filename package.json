@@ -1,0 +1,11 @@
+{
+  "name": "discordia",
+  "version": "1.0.0",
+  "description": "Chat de texto e voz para um grupo pequeno de amigos, hospedado no seu próprio PC.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js"
+  }
+}
