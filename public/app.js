@@ -3,6 +3,22 @@ import { MicProcessor, dbToPct } from './audio/engine.js';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const LK = () => window.LivekitClient;
+// biblioteca de voz (610 KB): carrega em segundo plano depois que o app abre, em vez de segurar a abertura.
+// Se a cópia local falhar, tenta a da internet (como antes). Entrar na voz espera por ela.
+let lkLoading = null;
+function loadLK() {
+  if (LK()) return Promise.resolve(LK());
+  return (lkLoading ||= new Promise((resolve) => {
+    const add = (src, next) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = () => (LK() ? resolve(LK()) : next());
+      s.onerror = next;
+      document.head.append(s);
+    };
+    add('/vendor/livekit-client.umd.js', () => add('https://cdn.jsdelivr.net/npm/livekit-client@2/dist/livekit-client.umd.js', () => resolve(LK())));
+  }));
+}
 const desk = window.discordiaDesktop || null; // existe só dentro do app desktop
 let globalPtt = false; // true quando o app desktop captura a tecla no sistema todo
 
@@ -206,6 +222,7 @@ async function boot() {
   if (S.member) goServer(S.serverId); else showFriends();
   connectEvents();
   checkInviteLink();
+  loadLK();
   setTimeout(() => emojiName('🙂'), 1500); // carrega os nomes dos emojis em segundo plano
   // deixa a supressão de ruído já baixada (é o arquivo mais pesado ao entrar na voz)
   setTimeout(() => { fetch('/audio/mic-worklet.js').catch(() => {}); fetch('/vendor/rnnoise/rnnoise-sync.js').catch(() => {}); }, 4000);
@@ -2037,7 +2054,7 @@ function showVoiceView() {
 }
 
 async function joinVoice(id) {
-  const L = LK();
+  const L = LK() || (await loadLK());
   if (!L) return toast('A biblioteca de voz não carregou. Confira a internet ou peça para o dono do servidor reabrir o DiscordIA.', true, 7000);
   if (!window.isSecureContext) return toast('O navegador só libera o microfone em HTTPS. Use o endereço https://…ts.net do Tailscale (ou localhost no PC do servidor).', true, 9000);
   if (V.joining) return;
