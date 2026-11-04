@@ -949,12 +949,18 @@ function placePopover(pop, x, y) {
   const w = pop.offsetWidth, hgt = pop.offsetHeight;
   pop.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + 'px';
   pop.style.top = Math.max(8, Math.min(y, innerHeight - hgt - 8)) + 'px';
+  // tira os ouvintes junto com o menu (antes o do teclado só saía apertando Esc e segurava o menu na memória)
+  const stop = () => { document.removeEventListener('mousedown', close, true); document.removeEventListener('touchstart', close, true); removeEventListener('keydown', esc, true); };
   const close = (ev) => {
+    if (!pop.isConnected) return stop(); // já foi fechado de outro jeito
     if (pop.contains(ev.target)) return;
-    pop.remove(); document.removeEventListener('mousedown', close, true); document.removeEventListener('touchstart', close, true);
+    pop.remove(); stop();
   };
   setTimeout(() => { document.addEventListener('mousedown', close, true); document.addEventListener('touchstart', close, true); }, 0);
-  const esc = (ev) => { if (ev.key === 'Escape') { pop.remove(); removeEventListener('keydown', esc, true); } };
+  const esc = (ev) => {
+    if (!pop.isConnected) return stop();
+    if (ev.key === 'Escape') { pop.remove(); stop(); }
+  };
   addEventListener('keydown', esc, true);
   return pop;
 }
