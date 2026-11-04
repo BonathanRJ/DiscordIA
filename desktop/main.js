@@ -47,6 +47,8 @@ let win = null;
 let tray = null;
 let quitting = false;
 let voiceState = { muted: false, deafened: false, inVoice: false };
+let boundsTimer = null; // gravação pendente da posição da janela
+const flushBounds = () => { if (boundsTimer) { clearTimeout(boundsTimer); boundsTimer = null; saveCfg(); } };
 
 // ---------- Janela principal ----------
 function createWindow() {
@@ -75,14 +77,17 @@ function createWindow() {
   if (cfg.maximized) win.maximize();
   win.once('ready-to-show', () => { if (!process.argv.includes('--oculto')) win.show(); });
 
+  // arrastar a janela dispara "move" sem parar: guarda a posição na hora, mas só grava no disco 500 ms depois do último
   const remember = () => {
     if (!win || win.isMinimized()) return;
     cfg.maximized = win.isMaximized();
     if (!cfg.maximized) cfg.bounds = win.getBounds();
-    saveCfg();
+    clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(() => { boundsTimer = null; saveCfg(); }, 500);
   };
   win.on('resize', remember);
   win.on('move', remember);
+  win.on('session-end', flushBounds); // Windows desligando: grava a posição pendente
 
   // Fechar manda para a bandeja (a voz continua). Sair de verdade pela bandeja.
   win.on('close', (e) => {
@@ -345,7 +350,7 @@ ipcMain.on('setup:retry', () => openServer());
 
 // ---------- Ciclo de vida ----------
 app.on('second-instance', showWindow);
-app.on('before-quit', () => { quitting = true; });
+app.on('before-quit', () => { quitting = true; flushBounds(); });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   if (hookStarted) { try { hook.stop(); } catch {} }
