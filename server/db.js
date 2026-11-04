@@ -6,6 +6,9 @@ export function openDb(dataDir) {
   const db = new DatabaseSync(path.join(dataDir, 'resenha.db'));
   db.exec(`
     PRAGMA journal_mode = WAL;
+    -- NORMAL (recomendado com WAL): cada gravação não espera o disco confirmar. O banco não corrompe;
+    -- só numa queda de energia as últimas gravações podem se perder.
+    PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS users (
