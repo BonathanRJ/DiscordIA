@@ -286,6 +286,7 @@ function connectEvents() {
   es.addEventListener('voice', (e) => {
     const others = () => Object.keys(S.voice[V.channelId] || {}).filter((id) => Number(id) !== S.me.id);
     const before = V.channelId ? others() : [];
+    const prevVoice = S.voice || {};
     S.voice = JSON.parse(e.data);
     const mine = V.room && S.voice[V.channelId]?.[S.me.id];
     if (mine && (!!mine.smute !== !!V.serverMod?.mute || !!mine.sdeaf !== !!V.serverMod?.deaf)) { V.serverMod = { mute: !!mine.smute, deaf: !!mine.sdeaf }; applyVolumes(); updateMic(); renderMe(); }
@@ -294,6 +295,8 @@ function connectEvents() {
       if (after.some((id) => !before.includes(id))) SND.join();
       else if (before.some((id) => !after.includes(id))) SND.leave();
     }
+    // ninguém entrou nem saiu (só microfone, fone, câmera ou tela): a lista de membros e o cabeçalho não mudam
+    if (sameVoicePeople(prevVoice, S.voice) && updateVoiceRooms(prevVoice)) { renderTiles(); checkCalls(); return; }
     renderChannels(); renderMembers(); renderTiles(); checkCalls(); renderHeader();
   });
 }
@@ -332,23 +335,7 @@ function renderChannels() {
       c.private ? h('span', { class: 'chan-lock', title: 'Canal privado' }, icon('lock')) : null,
       unread && S.current !== c.id ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null, tools));
     if (type === 'voice') {
-      const people = S.voice[c.id] || {};
-      const wrap = h('div', { class: 'voice-people' });
-      for (const [uid, st] of Object.entries(people)) {
-        const u = S.users.get(Number(uid));
-        if (!u) continue;
-        const speaking = V.channelId === c.id && V.speaking.has(String(uid));
-        const isMe = Number(uid) === S.me.id;
-          wrap.append(h('div', { class: 'vp clickable', 'data-uid': uid, 'data-from': c.id, draggable: isDm(c.id) ? null : 'true', title: 'Arraste até outra sala para mover',
-          oncontextmenu: (ev) => { ev.preventDefault(); voiceUserMenu(Number(uid), ev.clientX, ev.clientY); },
-          onclick: (e) => profileCard(Number(uid), e.currentTarget) },
-          avatar(u, 'sm', false, speaking || (isMe && V.meSpeaking)), h('span', { class: 'vp-name' }, u.displayName, prefs.userMuted[uid] ? h('span', { class: 'ic-inline', title: 'Você silenciou essa pessoa' }, icon('vol-off')) : ''),
-          h('span', { class: 'flags' },
-            st.screen ? h('span', { class: 'live' }, 'AO VIVO') : null,
-            st.video ? icon('cam') : null,
-            st.sdeaf ? h('span', { class: 'srv-flag', title: 'Áudio desativado no servidor' }, icon('head-off')) : st.smute ? h('span', { class: 'srv-flag', title: 'Silenciado no servidor' }, icon('mic-off')) : null,
-            !st.sdeaf && !st.smute ? (st.deafened ? icon('head-off') : st.muted ? icon('mic-off') : null) : null)));
-      }
+      const wrap = voicePeopleEl(c);
       if (wrap.childElementCount) list.append(wrap);
       const mu = S.music[c.id]?.current;
       if (mu) list.append(h('div', { class: 'vc-music', title: 'Tocando agora' }, icon('music'), h('span', { class: 'name' }, mu.title)));
@@ -372,6 +359,50 @@ function renderChannels() {
     for (const c of chans) if (!collapsed || (S.current === c.id && S.view === 'chat') || V.channelId === c.id || Object.keys(S.voice[c.id] || {}).length) chanRow(c);
   }
   updateTitle();
+}
+
+// quem está numa sala de voz da barra lateral, com os ícones de microfone, fone, câmera e tela
+function voicePeopleEl(c) {
+  const people = S.voice[c.id] || {};
+  const wrap = h('div', { class: 'voice-people' });
+  for (const [uid, st] of Object.entries(people)) {
+    const u = S.users.get(Number(uid));
+    if (!u) continue;
+    const speaking = V.channelId === c.id && V.speaking.has(String(uid));
+    const isMe = Number(uid) === S.me.id;
+    wrap.append(h('div', { class: 'vp clickable', 'data-uid': uid, 'data-from': c.id, draggable: isDm(c.id) ? null : 'true', title: 'Arraste até outra sala para mover',
+      oncontextmenu: (ev) => { ev.preventDefault(); voiceUserMenu(Number(uid), ev.clientX, ev.clientY); },
+      onclick: (e) => profileCard(Number(uid), e.currentTarget) },
+      avatar(u, 'sm', false, speaking || (isMe && V.meSpeaking)), h('span', { class: 'vp-name' }, u.displayName, prefs.userMuted[uid] ? h('span', { class: 'ic-inline', title: 'Você silenciou essa pessoa' }, icon('vol-off')) : ''),
+      h('span', { class: 'flags' },
+        st.screen ? h('span', { class: 'live' }, 'AO VIVO') : null,
+        st.video ? icon('cam') : null,
+        st.sdeaf ? h('span', { class: 'srv-flag', title: 'Áudio desativado no servidor' }, icon('head-off')) : st.smute ? h('span', { class: 'srv-flag', title: 'Silenciado no servidor' }, icon('mic-off')) : null,
+        !st.sdeaf && !st.smute ? (st.deafened ? icon('head-off') : st.muted ? icon('mic-off') : null) : null)));
+  }
+  return wrap;
+}
+
+// evento de voz em que ninguém entrou nem saiu (só mudaram ícones): troca só as salas que mudaram.
+// Devolve false quando a barra lateral não está como o esperado; aí quem chamou redesenha tudo.
+function updateVoiceRooms(prev) {
+  renderDmCall();
+  if (S.mode === 'home') return true; // na lista de conversas privadas só aparece quem está em chamada, e isso não mudou
+  for (const cid of Object.keys(S.voice)) {
+    if (JSON.stringify(prev[cid]) === JSON.stringify(S.voice[cid])) continue;
+    const btn = $(`#channel-list .chan[data-cid="${cid}"]`);
+    if (!btn) continue; // sala que não aparece aqui (outro servidor ou conversa privada)
+    const old = btn.nextElementSibling?.classList.contains('voice-people') ? btn.nextElementSibling : null;
+    const wrap = voicePeopleEl(channelById(Number(cid)));
+    if (!old !== !wrap.childElementCount) return false;
+    old?.replaceWith(wrap);
+  }
+  return true;
+}
+// as mesmas pessoas nas mesmas salas, na mesma ordem
+function sameVoicePeople(a, b) {
+  for (const cid of new Set([...Object.keys(a), ...Object.keys(b)])) if (Object.keys(a[cid] || {}).join() !== Object.keys(b[cid] || {}).join()) return false;
+  return true;
 }
 
 function avatar(u, size = '', dot = false, speaking = false) {
