@@ -250,6 +250,16 @@ const q = {
   moveChannel: db.prepare('UPDATE channels SET category_id = ?, position = ? WHERE id = ?'),
   moveCategory: db.prepare('UPDATE categories SET position = ? WHERE id = ?'),
 };
+// Várias gravações de uma ação numa transação só: o disco confirma uma vez em vez de várias, e é tudo-ou-nada.
+// fn tem de ser síncrona (sem await dentro).
+let txDepth = 0;
+function tx(fn) {
+  if (txDepth) return fn();
+  db.exec('BEGIN');
+  txDepth++;
+  try { const out = fn(); txDepth--; db.exec('COMMIT'); return out; }
+  catch (e) { txDepth--; db.exec('ROLLBACK'); throw e; }
+}
 const pair = (x, y) => (x < y ? [x, y] : [y, x]);
 // Quem pode ver um canal: conversa privada = as duas pessoas; canal/categoria privada = quem foi escolhido
 // (o administrador sempre vê tudo do servidor, mas não as conversas privadas dos outros)
@@ -440,13 +450,16 @@ function syncCalls() {
       c = { startedAt: Date.now(), joined: new Set(members.keys()), declined: new Set(), ringing: new Set() };
       const other = dmOther(ch, starter);
       if (!members.has(other)) c.ringing.add(other);
-      const r = q.insertFullMessage.run(ch.id, starter, '', null, c.startedAt, null, null);
-      c.msgId = Number(r.lastInsertRowid);
-      q.setCall.run(JSON.stringify(callOut(c)), c.msgId);
-      q.setRead.run(starter, ch.id, c.msgId);
+      tx(() => {
+        const r = q.insertFullMessage.run(ch.id, starter, '', null, c.startedAt, null, null);
+        c.msgId = Number(r.lastInsertRowid);
+        q.setCall.run(JSON.stringify(callOut(c)), c.msgId);
+        q.setRead.run(starter, ch.id, c.msgId);
+        q.dmReopen.run(ch.id, ch.dm_a); q.dmReopen.run(ch.id, ch.dm_b);
+      });
       calls.set(cid, c);
       emit(ch, 'message', rowToMessage(q.message.get(c.msgId)));
-      q.dmReopen.run(ch.id, ch.dm_a); q.dmReopen.run(ch.id, ch.dm_b); pushDms(ch.dm_a, ch.dm_b);
+      pushDms(ch.dm_a, ch.dm_b);
       if (c.ringing.size) c.timer = setTimeout(() => stopRinging(ch, c), RING_MS);
       pushCall(ch);
       continue;
@@ -512,9 +525,12 @@ function botSay(sid, text, extra = {}) {
   if (!ch) return;
   const author = extra.userId || q.admins.all()[0]?.id || q.allUsers.all()[0]?.id;
   if (!author) return;
-  const r = q.insertFullMessage.run(ch.id, author, '', null, Date.now(), null, null);
-  const id = Number(r.lastInsertRowid);
-  q.setSys.run(JSON.stringify({ kind: 'music', text, track: extra.track || null }), id);
+  const id = tx(() => {
+    const r = q.insertFullMessage.run(ch.id, author, '', null, Date.now(), null, null);
+    const mid = Number(r.lastInsertRowid);
+    q.setSys.run(JSON.stringify({ kind: 'music', text, track: extra.track || null }), mid);
+    return mid;
+  });
   emit(ch, 'message', rowToMessage(q.message.get(id)));
 }
 const trackLine = (t) => `**${t.title}**${t.author ? ` — ${t.author}` : ''}`;
@@ -907,11 +923,15 @@ async function action(user, b) {
         const target = q.message.get(Number(b.replyTo));
         if (target && target.channel_id === ch.id) replyTo = target.id;
       }
-      const r = q.insertFullMessage.run(ch.id, user.id, content, attachment ? JSON.stringify(attachment) : null, Date.now(), replyTo, null);
-      const msg = rowToMessage(q.message.get(Number(r.lastInsertRowid)));
-      q.setRead.run(user.id, ch.id, msg.id);
+      const msg = tx(() => {
+        const r = q.insertFullMessage.run(ch.id, user.id, content, attachment ? JSON.stringify(attachment) : null, Date.now(), replyTo, null);
+        const m = rowToMessage(q.message.get(Number(r.lastInsertRowid)));
+        q.setRead.run(user.id, ch.id, m.id);
+        if (ch.dm_a) { q.dmReopen.run(ch.id, ch.dm_a); q.dmReopen.run(ch.id, ch.dm_b); }
+        return m;
+      });
       emit(ch, 'message', msg);
-      if (ch.dm_a) { q.dmReopen.run(ch.id, ch.dm_a); q.dmReopen.run(ch.id, ch.dm_b); pushDms(ch.dm_a, ch.dm_b); }
+      if (ch.dm_a) pushDms(ch.dm_a, ch.dm_b);
       touchThreadParent(ch);
       if (cmdMatch) {
         const res = await musicCommand(user, cmdMatch[1], content.slice(cmdMatch[0].length).trim(), ch.server_id);
@@ -967,11 +987,15 @@ async function action(user, b) {
         content: src.content, attachment: src.attachment ? JSON.parse(src.attachment) : null, createdAt: src.created_at,
       };
       const comment = String(b.comment || '').slice(0, 2000).trim();
-      const r = q.insertFullMessage.run(dest.id, user.id, comment, null, Date.now(), null, JSON.stringify(fwd));
-      const msg = rowToMessage(q.message.get(Number(r.lastInsertRowid)));
-      q.setRead.run(user.id, dest.id, msg.id);
+      const msg = tx(() => {
+        const r = q.insertFullMessage.run(dest.id, user.id, comment, null, Date.now(), null, JSON.stringify(fwd));
+        const m = rowToMessage(q.message.get(Number(r.lastInsertRowid)));
+        q.setRead.run(user.id, dest.id, m.id);
+        if (dest.dm_a) { q.dmReopen.run(dest.id, dest.dm_a); q.dmReopen.run(dest.id, dest.dm_b); }
+        return m;
+      });
       emit(dest, 'message', msg);
-      if (dest.dm_a) { q.dmReopen.run(dest.id, dest.dm_a); q.dmReopen.run(dest.id, dest.dm_b); pushDms(dest.dm_a, dest.dm_b); }
+      if (dest.dm_a) pushDms(dest.dm_a, dest.dm_b);
       touchThreadParent(dest);
       return { ok: true, id: msg.id };
     }
