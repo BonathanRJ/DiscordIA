@@ -831,7 +831,8 @@ async function api(req, res, url) {
     if (from.length) { conds.push(`user_id IN (${from.map(() => '?').join(',')})`); args.push(...from); }
     if (before) { conds.push('created_at < ?'); args.push(before); }
     if (after) { conds.push('created_at >= ?'); args.push(after); }
-    const rows = db.prepare(`SELECT * FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ${sort === 'old' ? 'ASC' : 'DESC'}`).all(...args);
+    // só as colunas que o filtro usa; a mensagem completa é lida depois, apenas para as 25 da página
+    const rows = db.prepare(`SELECT id, content, attachment, forward FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ${sort === 'old' ? 'ASC' : 'DESC'}`).all(...args);
     const mentionNames = mentions.map((id) => q.userById.get(id)?.username).filter(Boolean).map((n) => new RegExp(`@${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
     const hits = rows.filter((r) => {
       const fwd = r.forward ? JSON.parse(r.forward) : null;
@@ -849,7 +850,7 @@ async function api(req, res, url) {
       }
       return true;
     });
-    return send(res, 200, { total: hits.length, results: hits.slice(offset, offset + 25).map(rowToMessage) });
+    return send(res, 200, { total: hits.length, results: hits.slice(offset, offset + 25).map((r) => rowToMessage(q.message.get(r.id))) });
   }
 
   if (p === '/api/upload' && m === 'POST') {
