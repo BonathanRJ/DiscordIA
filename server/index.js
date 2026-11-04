@@ -68,14 +68,16 @@ if (!db.prepare('SELECT COUNT(*) AS n FROM servers').get().n) {
 // ---------- Utilidades ----------
 const COLORS = ['#ff8a3d', '#3ddc97', '#5aa9ff', '#ff5d8f', '#c792ff', '#ffd23f', '#4dd4e6', '#ff6b4a', '#9be15d', '#f78fb3'];
 
-function hashPassword(pw) {
+// scrypt assíncrono (mesmo resultado do scryptSync): o cálculo da senha não trava o servidor para os outros
+const scryptAsync = (pw, salt) => new Promise((ok, no) => crypto.scrypt(pw, salt, 64, (e, k) => (e ? no(e) : ok(k))));
+async function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(pw, salt, 64);
+  const hash = await scryptAsync(pw, salt);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
 }
-function checkPassword(pw, stored) {
+async function checkPassword(pw, stored) {
   const [s, h] = stored.split(':');
-  const hash = crypto.scryptSync(pw, Buffer.from(s, 'hex'), 64);
+  const hash = await scryptAsync(pw, Buffer.from(s, 'hex'));
   return crypto.timingSafeEqual(hash, Buffer.from(h, 'hex'));
 }
 function parseCookies(req) {
@@ -683,13 +685,17 @@ async function api(req, res, url) {
     const b = await readJson(req);
     const username = cleanName(b.username, 24).toLowerCase();
     const displayName = cleanName(b.displayName || b.username);
-    const srv = checkInvite(b.invite);
+    checkInvite(b.invite);
     if (!/^[a-z0-9._-]{3,24}$/.test(username)) throw fail(400, 'Usuário: 3 a 24 caracteres (letras, números, ponto, hífen ou _).');
     if (String(b.password || '').length < 6) throw fail(400, 'A senha precisa de pelo menos 6 caracteres.');
     if (q.userByName.get(username)) throw fail(409, 'Esse usuário já existe.');
+    const passHash = await hashPassword(String(b.password));
+    // confere de novo, agora sem pausa até gravar: outro cadastro pode ter chegado enquanto a senha era calculada
+    const srv = checkInvite(b.invite);
+    if (q.userByName.get(username)) throw fail(409, 'Esse usuário já existe.');
     const isFirst = q.countUsers.get().n === 0;
     const color = COLORS[q.countUsers.get().n % COLORS.length];
-    const r = q.insertUser.run(username, displayName || username, hashPassword(String(b.password)), color, isFirst ? 1 : 0, Date.now());
+    const r = q.insertUser.run(username, displayName || username, passHash, color, isFirst ? 1 : 0, Date.now());
     const newId = Number(r.lastInsertRowid);
     q.addMember.run(srv.id, newId, Date.now());
     if (isFirst) for (const s of q.servers.all()) q.addMember.run(s.id, newId, Date.now()); // o primeiro (administrador) entra em todos
@@ -713,7 +719,8 @@ async function api(req, res, url) {
     rateLimit('login:' + req.socket.remoteAddress);
     const b = await readJson(req);
     const u = q.userByName.get(cleanName(b.username, 24).toLowerCase());
-    if (!u || !checkPassword(String(b.password || ''), u.pass_hash)) throw fail(401, 'Usuário ou senha incorretos.');
+    if (!u || !(await checkPassword(String(b.password || ''), u.pass_hash))) throw fail(401, 'Usuário ou senha incorretos.');
+    if (q.userById.get(u.id)?.pass_hash !== u.pass_hash) throw fail(401, 'Usuário ou senha incorretos.'); // conta excluída ou senha trocada enquanto conferia
     const token = crypto.randomBytes(32).toString('hex');
     q.insertSession.run(token, u.id, Date.now());
     return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(token, req) });
@@ -1035,9 +1042,12 @@ async function action(user, b) {
       if (b.avatar !== undefined) q.setAvatar.run(okUpload(b.avatar) ? b.avatar : null, user.id);
       if (b.banner !== undefined) q.setBanner.run(okUpload(b.banner) || /^#[0-9a-f]{6}$/i.test(b.banner || '') ? b.banner : null, user.id);
       if (b.newPassword) {
-        if (!checkPassword(String(b.currentPassword || ''), user.pass_hash)) throw fail(403, 'Senha atual incorreta.');
+        if (!(await checkPassword(String(b.currentPassword || ''), user.pass_hash))) throw fail(403, 'Senha atual incorreta.');
         if (String(b.newPassword).length < 6) throw fail(400, 'A nova senha precisa de pelo menos 6 caracteres.');
-        q.updatePassword.run(hashPassword(String(b.newPassword)), user.id);
+        const newHash = await hashPassword(String(b.newPassword));
+        const cur = q.userById.get(user.id); // a conta pode ter sido excluída enquanto a senha era calculada
+        if (!cur || cur.deleted || cur.pass_hash !== user.pass_hash) throw fail(403, 'Senha atual incorreta.');
+        q.updatePassword.run(newHash, user.id);
       }
       broadcast('users', q.allUsers.all().map(publicUser));
       return;
@@ -1220,8 +1230,10 @@ async function action(user, b) {
       const u = q.userById.get(Number(b.userId));
       if (!u || u.deleted) throw fail(404, 'Pessoa não encontrada.');
       if (u.id === user.id || u.is_admin) throw fail(400, 'Não dá para excluir um administrador.');
+      const deadHash = await hashPassword(crypto.randomBytes(24).toString('hex'));
+      if (q.userById.get(u.id)?.deleted !== 0) throw fail(404, 'Pessoa não encontrada.'); // já excluída enquanto calculava
       sendTo([u.id], 'deleted', {});
-      q.anonymize.run(`excluido-${u.id}-${crypto.randomBytes(3).toString('hex')}`, hashPassword(crypto.randomBytes(24).toString('hex')), u.id);
+      q.anonymize.run(`excluido-${u.id}-${crypto.randomBytes(3).toString('hex')}`, deadHash, u.id);
       q.deleteSessionsOf.run(u.id);
       q.deleteFriendsOf.run(u.id, u.id);
       q.deleteAccessOf.run(u.id);
