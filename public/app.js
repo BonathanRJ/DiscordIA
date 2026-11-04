@@ -663,14 +663,8 @@ function messageEl(m, prev) {
   }
   if (m.attachment) row.append(attachmentEl(m.attachment));
   if (m.reactions?.length) row.append(reactionsBar(m));
-
-  const tools = h('div', { class: 'tools' });
-  for (const e of prefs.recentEmojis.slice(0, 3)) tools.append(h('button', { class: 'icon-btn emo' + (iReacted(m, e) ? ' on' : ''), 'aria-label': `Reagir com ${e}`, 'data-emoji': e, onclick: () => toggleReact(m, e) }, e));
-  tools.append(h('button', { class: 'icon-btn', title: 'Adicionar reação', onclick: (ev) => emojiPicker(ev.currentTarget, (e) => toggleReact(m, e)) }, icon('smile-plus')));
-  tools.append(h('button', { class: 'icon-btn', title: 'Responder', onclick: () => startReply(m) }, icon('reply')));
-  if (mine) tools.append(h('button', { class: 'icon-btn', title: 'Editar', onclick: () => startEdit(m) }, icon('edit')));
-  tools.append(h('button', { class: 'icon-btn', title: 'Mais opções', onclick: (ev) => { const r = ev.currentTarget.getBoundingClientRect(); messageMenu(m, r.left, r.bottom + 4); } }, icon('dots')));
-  row.append(tools);
+  // a barra que aparece com o mouse em cima (reações rápidas, responder, editar, mais) só é montada quando o mouse chega
+  row.addEventListener('mouseenter', () => { if (!row.querySelector(':scope > .tools')) row.append(messageTools(m, mine)); });
 
   row.addEventListener('contextmenu', (ev) => {
     if (ev.target.closest('a, .edit-box, video, audio') || getSelection()?.toString()) return; // deixa o menu normal para links e texto selecionado
@@ -686,6 +680,16 @@ function messageEl(m, prev) {
   row.addEventListener('touchmove', (ev) => { const t0 = ev.touches[0]; if (Math.abs(t0.clientX - sx) + Math.abs(t0.clientY - sy) > 10) clearTimeout(lp); }, { passive: true });
   row.addEventListener('touchend', () => clearTimeout(lp));
   return row;
+}
+
+function messageTools(m, mine) {
+  const tools = h('div', { class: 'tools' });
+  for (const e of prefs.recentEmojis.slice(0, 3)) tools.append(h('button', { class: 'icon-btn emo' + (iReacted(m, e) ? ' on' : ''), 'aria-label': `Reagir com ${e}`, 'data-emoji': e, onclick: () => toggleReact(m, e) }, e));
+  tools.append(h('button', { class: 'icon-btn', title: 'Adicionar reação', onclick: (ev) => emojiPicker(ev.currentTarget, (e) => toggleReact(m, e)) }, icon('smile-plus')));
+  tools.append(h('button', { class: 'icon-btn', title: 'Responder', onclick: () => startReply(m) }, icon('reply')));
+  if (mine) tools.append(h('button', { class: 'icon-btn', title: 'Editar', onclick: () => startEdit(m) }, icon('edit')));
+  tools.append(h('button', { class: 'icon-btn', title: 'Mais opções', onclick: (ev) => { const r = ev.currentTarget.getBoundingClientRect(); messageMenu(m, r.left, r.bottom + 4); } }, icon('dots')));
+  return tools;
 }
 
 function replyLine(r) {
