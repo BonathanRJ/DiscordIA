@@ -189,7 +189,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .call-card .avatar { animation: ringpulse 1.4s ease-out infinite; margin-bottom: 8px; }
 .call-card b { font-size: 17px; }
 .call-card small { color: var(--muted); }
-.call-acts { display: flex; gap: 28px; margin-top: 14px; }
+.call-acts { display: flex; gap: 16px; margin-top: 14px; }
+.call-ignore { margin-top: 10px; color: var(--muted); }
+.call-ignore:hover { color: var(--text); }
 .call-btn { width: 52px; height: 52px; border-radius: 50%; border: 0; display: grid; place-items: center; color: #fff; }
 .call-btn.yes { background: #248046; }
 .call-btn.no { background: var(--danger); }
@@ -1096,3 +1098,5 @@ dialog:has(form.cam-modal) { width: min(640px, calc(100% - 24px)); }
 .mp-qhead .link-btn { display: inline-flex; align-items: center; gap: 4px; }
 .mp-qhead .link-btn svg { width: 12px; height: 12px; }
 .ov-name .ic-inline svg { width: 16px; height: 16px; }
+.call-join-link { font-size: inherit; color: #00a8fc; }
+.call-join-link:hover { color: #00a8fc; }

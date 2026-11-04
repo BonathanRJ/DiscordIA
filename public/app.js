@@ -1484,8 +1484,7 @@ function renderHome() {
     }, avatar(u, '', true), h('span', { class: 'name' }, u?.displayName || 'alguém'),
       V.channelId === d.id && S.calls[d.id] ? h('span', { class: 'call-timer', 'data-start': S.calls[d.id].startedAt }, fmtDur(Date.now() - S.calls[d.id].startedAt))
         : inCall ? h('span', { class: 'in-call', title: 'Chamada em andamento' }, icon('phone')) : null,
-      unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null,
-      h('span', { class: 'chan-tools' }, h('span', { title: 'Fechar conversa', onclick: (e) => { e.stopPropagation(); closeDm(d.id); } }, icon('x')))));
+      unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null));
   }
   updateTitle();
 }
@@ -1501,10 +1500,15 @@ async function openDm(uid) {
     return id;
   } catch (e) { toast(e.message, true); }
 }
-async function closeDm(id) {
-  S.dms = S.dms.filter((d) => d.id !== id);
+// excluir conversa: as mensagens somem só para você e a conversa sai da lista (volta se chegar mensagem nova)
+async function deleteDm(id) {
+  const d = S.dms.find((x) => x.id === id);
+  const name = userName(d?.dm);
+  if (!(await confirmModal('Excluir conversa', `As mensagens com ${name} vão sumir só para você; ${name} continua vendo tudo. Isso não dá para desfazer.`, 'Excluir conversa'))) return;
+  try { await act('dm_close', { channelId: id }); } catch (e) { return toast(e.message, true); }
+  S.dms = S.dms.filter((x) => x.id !== id);
+  delete S.msgs[id]; delete S.hasMore[id]; S.unread[id] = 0;
   if (S.current === id && S.view === 'chat') showFriends(); else renderChannels();
-  act('dm_close', { channelId: id }).catch(() => {});
 }
 async function startCall(uid, video = false) {
   const id = await openDm(uid);
@@ -1789,7 +1793,7 @@ function userMenu(uid, x, y, dmId) {
       : st === 'outgoing' ? item('Cancelar pedido de amizade', () => act('friend_remove', { userId: uid }))
       : st === 'incoming' ? item('Aceitar pedido de amizade', () => act('friend_accept', { userId: uid }).catch((e) => toast(e.message, true)))
       : item('Remover amizade', () => removeFriend(uid), 'danger'),
-    dmId ? item('Fechar conversa', () => closeDm(dmId)) : null,
+    dmId ? item('Excluir conversa', () => deleteDm(dmId), 'danger') : null,
     ...(S.me.isAdmin && !me && !u.isAdmin && !u.deleted ? [sep(),
       S.mode === 'server' && isMember(u) ? item('Expulsar do servidor', () => kickUser(u), 'danger') : null,
       item('Deletar usuário', () => deleteUser(u), 'danger')] : []));
@@ -1841,7 +1845,7 @@ function findModal() {
 const fmtDur = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60; return (hh ? hh + ':' + String(mm).padStart(2, '0') : mm) + ':' + String(ss).padStart(2, '0'); };
 function durText(ms) {
   const min = Math.round(ms / 60000);
-  if (min < 1) return 'menos de um minuto';
+  if (min < 1) return 'poucos segundos';
   if (min < 60) return min === 1 ? '1 minuto' : `${min} minutos`;
   const hh = Math.floor(min / 60), mm = min % 60;
   return `${hh} hora${hh > 1 ? 's' : ''}${mm ? ` e ${mm} minuto${mm > 1 ? 's' : ''}` : ''}`;
@@ -1851,16 +1855,17 @@ function callMessageEl(m) {
   const c = m.call;
   const starter = m.userId === S.me.id ? 'Você' : userName(m.userId);
   const ended = !!c.endedAt;
-  const missed = ended && m.userId !== S.me.id && !c.joined.includes(S.me.id);
-  const declined = (c.declined || []).includes(S.me.id) && m.userId !== S.me.id;
-  const dur = ended ? durText(c.endedAt - c.startedAt) : '';
+  const declinedAt = m.userId !== S.me.id ? c.declinedAt?.[S.me.id] : 0; // você recusou: conta até a hora em que recusou
+  const missed = (ended || !!declinedAt) && m.userId !== S.me.id && !c.joined.includes(S.me.id);
+  const dur = ended ? durText(c.endedAt - c.startedAt) : declinedAt ? durText(declinedAt - c.startedAt) : '';
+  const joinable = !ended && !missed && V.channelId !== m.channelId;
   let text;
-  if (missed) text = [declined ? 'Você recusou uma chamada de ' : 'Você perdeu uma chamada de ', h('b', {}, userName(m.userId)), ` que durou ${dur}.`];
-  else text = [h('b', {}, starter), ended ? ` iniciou uma chamada que durou ${dur}.` : ' iniciou uma chamada.'];
+  if (missed) text = ['Você perdeu uma chamada de ', h('b', {}, userName(m.userId)), ` que durou ${dur}.`];
+  else text = [h('b', {}, starter), ended ? ` iniciou uma chamada que durou ${dur}.` : ' iniciou uma chamada.',
+    joinable ? [' — ', h('button', { class: 'link call-join-link', onclick: () => joinVoice(m.channelId) }, 'Juntar-se à chamada')] : ''];
   const when = sameDay(m.createdAt, Date.now()) ? fmtTime(m.createdAt) : `${new Date(m.createdAt).toLocaleDateString('pt-BR')} ${fmtTime(m.createdAt)}`;
   const row = h('div', { class: 'msg call-msg' + (missed ? ' missed' : ''), 'data-id': m.id },
     h('span', { class: 'call-ic' }, icon('phone')), h('span', { class: 'call-txt' }, ...text, h('time', {}, when)));
-  if (!ended && V.channelId !== m.channelId) row.append(h('button', { class: 'btn call-join small', onclick: () => joinVoice(m.channelId) }, 'Entrar na chamada'));
   return row;
 }
 
@@ -1914,8 +1919,9 @@ function renderDmCall() {
 
 // toque de quem recebe e "chamando…" de quem liga
 let ringTimer = 0, ringMode = '';
+const ignoredCalls = new Set(); // "canal:início" das ligações que você ignorou (o cartão não volta)
 function checkCalls() {
-  const incoming = S.dms.find((d) => (S.calls[d.id]?.ringing || []).includes(S.me.id) && V.channelId !== d.id);
+  const incoming = S.dms.find((d) => (S.calls[d.id]?.ringing || []).includes(S.me.id) && V.channelId !== d.id && !ignoredCalls.has(`${d.id}:${S.calls[d.id].startedAt}`));
   const outgoing = !!V.room && isDm(V.channelId) && (S.calls[V.channelId]?.ringing || []).length > 0;
   const card = $('#call-card');
   if (!incoming) card?.remove();
@@ -1925,8 +1931,10 @@ function checkCalls() {
     document.body.append(h('div', { class: 'call-card', id: 'call-card', 'data-id': incoming.id },
       avatar(u, 'xl'), h('b', {}, u?.displayName || ''), h('small', {}, 'Chamada recebida…'),
       h('div', { class: 'call-acts' },
-        h('button', { class: 'call-btn no', title: 'Recusar', onclick: () => { $('#call-card')?.remove(); act('call_decline', { channelId: incoming.id }).catch(() => {}); } }, icon('phone-off')),
-        h('button', { class: 'call-btn yes', title: 'Atender', onclick: () => { $('#call-card')?.remove(); joinVoice(incoming.id); } }, icon('phone')))));
+        h('button', { class: 'call-btn yes', title: 'Aceitar com câmera', onclick: async () => { $('#call-card')?.remove(); await joinVoice(incoming.id); if (V.room && V.channelId === incoming.id) toggleCam(); } }, icon('cam')),
+        h('button', { class: 'call-btn yes', title: 'Aceitar chamada', onclick: () => { $('#call-card')?.remove(); joinVoice(incoming.id); } }, icon('phone')),
+        h('button', { class: 'call-btn no', title: 'Recusar chamada', onclick: () => { $('#call-card')?.remove(); act('call_decline', { channelId: incoming.id }).catch(() => {}); } }, icon('phone-off'))),
+      h('button', { class: 'link call-ignore', onclick: () => { ignoredCalls.add(`${incoming.id}:${S.calls[incoming.id]?.startedAt}`); checkCalls(); } }, 'Ignorar')));
     desk?.flash();
   }
   const mode = incoming ? 'in' : outgoing ? 'out' : '';
